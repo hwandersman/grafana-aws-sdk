@@ -254,6 +254,160 @@ func TestNewSession_AllowedAuthProviders(t *testing.T) {
 	})
 }
 
+//func TestNewSessionGrafanaAssumeRole(t *testing.T) {
+//	newSharedCredentials = func(profile string) *credentials.Credentials {
+//		if profile != "assume_role" {
+//			t.Errorf("no profile")
+//		}
+//		return credentials.NewCredentials(&mockCredentialsProvider{})
+//	}
+//	t.Run("Credentials are created", func(t *testing.T) {
+//		credentialCfgs := []*aws.Config{}
+//		newSession = func(cfgs ...*aws.Config) (*session.Session, error) {
+//			cfg := aws.Config{}
+//			cfg.MergeIn(cfgs...)
+//			credentialCfgs = append(credentialCfgs, &cfg)
+//			return &session.Session{
+//				Config: &cfg,
+//			}, nil
+//		}
+//		newSTSCredentials = func(c client.ConfigProvider, roleARN string,
+//			options ...func(*stscreds.AssumeRoleProvider)) *credentials.Credentials {
+//			p := &stscreds.AssumeRoleProvider{
+//				RoleARN: roleARN,
+//			}
+//			for _, o := range options {
+//				o(p)
+//			}
+//			require.Equal(t, "test_arn", roleARN)
+//			return credentials.NewCredentials(p)
+//		}
+//		settings := AWSDatasourceSettings{
+//			AuthType:      AuthTypeGrafanaAssumeRole,
+//			AssumeRoleARN: "test_arn",
+//		}
+//		os.Setenv(AllowedAuthProvidersEnvVarKeyName, "grafana_assume_role")
+//		os.Setenv(AssumeRoleEnabledEnvVarKeyName, "true")
+//
+//		cache := NewSessionCache()
+//		sess, err := cache.GetSession(SessionConfig{Settings: settings})
+//		require.NoError(t, err)
+//		require.NotNil(t, sess)
+//
+//		// test that externalId is pulled from ?somewhere?
+//
+//		// test that external id is passed
+//		//testI := &credentialCfgs[1].Credentials.
+//		//require.Equal(t, 2, len(credentialCfgs))
+//	})
+//}
+
+func TestNewSession_AuthTypeGrafanaAssumeRole(t *testing.T) {
+	origAllowedAuthProvidersEnvVarKeyName := os.Getenv(AllowedAuthProvidersEnvVarKeyName)
+	origAssumeRoleEnabledEnvVarKeyName := os.Getenv(AssumeRoleEnabledEnvVarKeyName)
+	origNewSTSCredentials := newSTSCredentials
+	t.Cleanup(func() {
+		require.NoError(t, os.Setenv(AllowedAuthProvidersEnvVarKeyName, origAllowedAuthProvidersEnvVarKeyName))
+		require.NoError(t, os.Setenv(AssumeRoleEnabledEnvVarKeyName, origAssumeRoleEnabledEnvVarKeyName))
+		newSTSCredentials = origNewSTSCredentials
+	})
+
+	t.Run("externalID is passed", func(t *testing.T) {
+		newSTSCredentials = func(c client.ConfigProvider, roleARN string,
+			options ...func(*stscreds.AssumeRoleProvider)) *credentials.Credentials {
+			p := &stscreds.AssumeRoleProvider{
+				RoleARN: roleARN,
+			}
+			for _, o := range options {
+				o(p)
+			}
+			require.NotNil(t, p.ExternalID)
+
+			assert.Equal(t, "grafanamagic", *p.ExternalID)
+			return credentials.NewCredentials(p)
+		}
+
+		require.NoError(t, os.Setenv(AllowedAuthProvidersEnvVarKeyName, "grafana_assume_role"))
+		require.NoError(t, os.Setenv(AssumeRoleEnabledEnvVarKeyName, "true"))
+
+		cache := NewSessionCache()
+		_, err := cache.GetSession(SessionConfig{Settings: AWSDatasourceSettings{
+			AuthType:      AuthTypeGrafanaAssumeRole,
+			AssumeRoleARN: "test_arn",
+		}})
+
+		require.NoError(t, err)
+	})
+
+	//t.Run("roleARN is passed", func(t *testing.T) {
+	//	newSTSCredentials = func(c client.ConfigProvider, roleARN string,
+	//		options ...func(*stscreds.AssumeRoleProvider)) *credentials.Credentials {
+	//		p := &stscreds.AssumeRoleProvider{
+	//			RoleARN: roleARN,
+	//		}
+	//		for _, o := range options {
+	//			o(p)
+	//		}
+	//		require.Equal(t, "test_arn", roleARN)
+	//		return credentials.NewCredentials(p)
+	//	}
+	//
+	//	os.Setenv(AllowedAuthProvidersEnvVarKeyName, "grafana_assume_role")
+	//	os.Setenv(AssumeRoleEnabledEnvVarKeyName, "true")
+	//
+	//	cache := NewSessionCache()
+	//	_, err := cache.GetSession(SessionConfig{Settings: AWSDatasourceSettings{
+	//		AuthType:      AuthTypeGrafanaAssumeRole,
+	//		AssumeRoleARN: "test_arn",
+	//	}})
+	//
+	//	require.NoError(t, err)
+	//})
+}
+
+//
+//func TestNewSession_Fluffles(t *testing.T) {
+//	t.Run("Credentials are created", func(t *testing.T) {
+//		newEC2Metadata = func(p client.ConfigProvider, cfgs ...*aws.Config) *ec2metadata.EC2Metadata {
+//			return nil
+//		}
+//		newRemoteCredentials = func(sess *session.Session) *credentials.Credentials {
+//			return credentials.NewCredentials(&ec2rolecreds.EC2RoleProvider{Client: newEC2Metadata(nil), ExpiryWindow: stscreds.DefaultDuration})
+//		}
+//
+//		credentialCfgs := []*aws.Config{}
+//		newSession = func(cfgs ...*aws.Config) (*session.Session, error) {
+//			cfg := aws.Config{}
+//			cfg.MergeIn(cfgs...)
+//			credentialCfgs = append(credentialCfgs, &cfg)
+//			return &session.Session{
+//				Config: &cfg,
+//			}, nil
+//		}
+//		os.Setenv(AllowedAuthProvidersEnvVarKeyName, "ec2_iam_role")
+//		os.Setenv(AssumeRoleEnabledEnvVarKeyName, "true")
+//
+//		cache := NewSessionCache()
+//		sess, err := cache.GetSession(SessionConfig{Settings: AWSDatasourceSettings{
+//			AuthType: AuthTypeEC2IAMRole,
+//			Endpoint: "foo",
+//		}})
+//		require.NoError(t, err)
+//		require.NotNil(t, sess)
+//
+//		assert.Equal(t, credentials.NewCredentials(&ec2rolecreds.EC2RoleProvider{
+//			Client: newEC2Metadata(nil), ExpiryWindow: stscreds.DefaultDuration,
+//		}), sess.Config.Credentials)
+//
+//		// Endpoint should be added to final session but not configuration session
+//		require.Equal(t, 2, len(credentialCfgs))
+//		require.Nil(t, credentialCfgs[0].Endpoint)
+//		require.NotNil(t, credentialCfgs[1].Endpoint)
+//		require.NotNil(t, sess.Config.Endpoint)
+//		require.Equal(t, "foo", *sess.Config.Endpoint)
+//	})
+//}
+
 func TestNewSession_EC2IAMRole(t *testing.T) {
 	newSession = func(cfgs ...*aws.Config) (*session.Session, error) {
 		cfg := aws.Config{}
