@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws/client"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/gtime"
 
@@ -27,18 +28,24 @@ type envelope struct {
 	expiration time.Time
 }
 
+type stsCredentialsGetter interface { // bridge between mock and "real" implementation (aws)
+	NewCredentials(c client.ConfigProvider, roleARN string, options ...func(*stscreds.AssumeRoleProvider)) *credentials.Credentials
+}
+
 // SessionCache cache sessions for a while
 type SessionCache struct {
-	sessCache     map[string]envelope
-	sessCacheLock sync.RWMutex
-	authSettings  *AuthSettings
+	sessCache            map[string]envelope
+	sessCacheLock        sync.RWMutex
+	authSettings         *AuthSettings
+	stsCredentialsGetter stsCredentialsGetter // dependency injection
 }
 
 // NewSessionCache creates a new session cache using the default settings loaded from environment variables
-func NewSessionCache() *SessionCache {
+func NewSessionCache(stsCredentialsGetter stsCredentialsGetter) *SessionCache {
 	return &SessionCache{
-		sessCache:    map[string]envelope{},
-		authSettings: ReadAuthSettingsFromEnvironmentVariables(),
+		sessCache:            map[string]envelope{},
+		authSettings:         ReadAuthSettingsFromEnvironmentVariables(),
+		stsCredentialsGetter: stsCredentialsGetter,
 	}
 }
 
@@ -96,18 +103,15 @@ func ReadAuthSettingsFromEnvironmentVariables() *AuthSettings {
 
 // Session factory.
 // Stubbable by tests.
+//
 //nolint:gocritic
 var newSession = func(cfgs ...*aws.Config) (*session.Session, error) {
 	return session.NewSession(cfgs...)
 }
 
-// STS credentials factory.
-// Stubbable by tests.
-//nolint:gocritic
-var newSTSCredentials = stscreds.NewCredentials
-
 // EC2Metadata service factory.
 // Stubbable by tests.
+//
 //nolint:gocritic
 var newEC2Metadata = ec2metadata.New
 
@@ -162,6 +166,7 @@ func (sc *SessionCache) GetSession(c SessionConfig) (*session.Session, error) {
 		return nil, fmt.Errorf("attempting to use assume role (ARN) which is disabled in grafana.ini")
 	}
 
+	// Hash the settings to use as a cache key
 	bldr := strings.Builder{}
 	for i, s := range []string{
 		c.Settings.AuthType.String(), c.Settings.AccessKey, c.Settings.SecretKey, c.Settings.Profile, c.Settings.AssumeRoleARN, c.Settings.Region, c.Settings.Endpoint,
@@ -175,6 +180,7 @@ func (sc *SessionCache) GetSession(c SessionConfig) (*session.Session, error) {
 	hashedSettings := sha256.Sum256([]byte(bldr.String()))
 	cacheKey := fmt.Sprintf("%v", hashedSettings)
 
+	// Check if we have a valid session in the cache, if so return it
 	sc.sessCacheLock.RLock()
 	if env, ok := sc.sessCache[cacheKey]; ok {
 		if env.expiration.After(time.Now().UTC()) {
@@ -229,6 +235,13 @@ func (sc *SessionCache) GetSession(c SessionConfig) (*session.Session, error) {
 			return nil, err
 		}
 		cfgs = append(cfgs, &aws.Config{Credentials: newRemoteCredentials(sess)})
+	case AuthTypeGrafanaAssumeRole:
+		backend.Logger.Debug("Authenticating towards AWS with Grafana Assume Role", "region", c.Settings.Region)
+		// TODO temporary profile name
+		profileName := "assume_role"
+		cfgs = append(cfgs, &aws.Config{
+			Credentials: credentials.NewSharedCredentials("", profileName),
+		})
 	default:
 		panic(fmt.Sprintf("Unrecognized authType: %d", c.Settings.AuthType))
 	}
@@ -257,11 +270,14 @@ func (sc *SessionCache) GetSession(c SessionConfig) (*session.Session, error) {
 			},
 			{
 				// The previous session is used to obtain STS Credentials
-				Credentials: newSTSCredentials(sess, c.Settings.AssumeRoleARN, func(p *stscreds.AssumeRoleProvider) {
+				Credentials: sc.stsCredentialsGetter.NewCredentials(sess, c.Settings.AssumeRoleARN, func(p *stscreds.AssumeRoleProvider) {
 					// Not sure if this is necessary, overlaps with p.Duration and is undocumented
 					p.Expiry.SetExpiration(expiration, 0)
 					p.Duration = duration
-					if c.Settings.ExternalID != "" {
+					if c.Settings.AuthType == AuthTypeGrafanaAssumeRole {
+						// TODO: pull externalid from somewhere, can not be user input or hardcoded string
+						p.ExternalID = aws.String("grafanamagic")
+					} else if c.Settings.ExternalID != "" {
 						p.ExternalID = aws.String(c.Settings.ExternalID)
 					}
 				}),

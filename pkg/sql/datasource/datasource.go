@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/aws/aws-sdk-go/aws/client"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/grafana/grafana-aws-sdk/pkg/awsds"
 	"github.com/grafana/grafana-aws-sdk/pkg/sql/api"
 	"github.com/grafana/grafana-aws-sdk/pkg/sql/driver"
@@ -16,12 +19,12 @@ import (
 
 // AWSDatasource stores a cache of several instances.
 // Each Map will depend on the datasource ID (and connection options):
-// - config: Base configuration. It will be used as base to populate datasource settings.
-//           It does not depend on connection options (only one per datasource)
-// - api: API instace with the common methods to contact the data source API.
-// - driver: Abstraction on top the upstream sql.Driver. Defined to handle multiple connections.
-// - db: Upstream database (sql.DB).
-// - sessionCache: AWS cache. This is not a Map since it does not depend on the datasource.
+//   - config: Base configuration. It will be used as base to populate datasource settings.
+//     It does not depend on connection options (only one per datasource)
+//   - api: API instace with the common methods to contact the data source API.
+//   - driver: Abstraction on top the upstream sql.Driver. Defined to handle multiple connections.
+//   - db: Upstream database (sql.DB).
+//   - sessionCache: AWS cache. This is not a Map since it does not depend on the datasource.
 type AWSDatasource struct {
 	sessionCache *awsds.SessionCache
 	config       sync.Map
@@ -29,8 +32,16 @@ type AWSDatasource struct {
 	driver       sync.Map
 }
 
+type awsStsCredsGetter struct {
+}
+
+func (t *awsStsCredsGetter) NewCredentials(c client.ConfigProvider, roleARN string, options ...func(*stscreds.AssumeRoleProvider)) *credentials.Credentials {
+	return stscreds.NewCredentials(c, roleARN, options...)
+}
+
 func New() *AWSDatasource {
-	ds := &AWSDatasource{sessionCache: awsds.NewSessionCache()}
+	stsCredsGetter := &awsStsCredsGetter{}
+	ds := &AWSDatasource{sessionCache: awsds.NewSessionCache(stsCredsGetter)}
 	return ds
 }
 
