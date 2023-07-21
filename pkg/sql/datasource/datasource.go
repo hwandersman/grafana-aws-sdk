@@ -32,8 +32,7 @@ type AWSDatasource struct {
 	driver       sync.Map
 }
 
-type awsStsCredsGetter struct {
-}
+type awsStsCredsGetter struct{}
 
 func (t *awsStsCredsGetter) NewCredentials(c client.ConfigProvider, roleARN string, options ...func(*stscreds.AssumeRoleProvider)) *credentials.Credentials {
 	return stscreds.NewCredentials(c, roleARN, options...)
